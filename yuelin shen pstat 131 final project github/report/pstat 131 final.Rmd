@@ -1,0 +1,458 @@
+---
+title: "Final Project"
+author: "Yuelin Shen"
+date: "11/22/2022"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    code_folding: show
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    tidy = TRUE,
+    tidy.opts = list(width.cutoff = 60)
+)
+```
+
+We first set up the working environments and load packages.
+```{r, message=FALSE}
+library(corrplot)
+library(discrim)
+library(corrr)
+library(MASS)
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(janitor)
+library(yardstick)
+library(dplyr)
+library(data.table)
+library(glmnet)
+library(rpart.plot)
+library(vip)
+library(janitor)
+library(randomForest)
+library(xgboost)
+library(kernlab)
+library(ranger)
+tidymodels_prefer()
+```
+
+# Preface
+
+## What is MVP in NBA?
+
+The National Basketball Association Most Valuable Player Award (MVP) is an annual National Basketball Association (NBA) award given since the 1955–56 season to the best performing player of the regular season.
+
+## Purpose of the model
+
+The purpose of this model is to predict the points per game of a MVP player based on different parameters and MVP samples.
+
+## Loading and Exploring Raw Data
+
+```{r}
+mvpstats <- read.csv("mvpsnew.csv") 
+```
+
+### Then we review on over data to know the meanings of each parameter
+```{r}
+mvpstats %>% dim()
+```
+We have a total of 474 observations with 21 parameters.
+
+Below is the codebook for the dataset. There are a total of 21 variables that could be used to measure players' behaviors and impact on court.
+
+- `Rank`: MVP Rank
+- `Player`: Player's Name
+- `Age`: Player's aGE
+- `Tm`: Team
+- `First`: First Place Votes
+- `Pts.Won`: Points won
+- `Pts.Max`: Maximum Points
+- `Share`: Points Share
+- `G`: Games Played
+- `MP`: Minutes Played per Game
+- `PTS`: Points per Game
+- `TRB`: Total Rebounds per Game
+- `AST`: Assist per Game
+- `STL`: Steals per Game
+- `BLC`: Blocks per Game
+- `FG.`: Field Goal Percentage
+- `X3P.`: 3-point Field Goal Percentage
+- `FT.`: Free Throw Percentage
+- `WS`: Win Shares
+- `WS.48`: Win Shares per 48 Minutes
+- `Year`: Year of MVP earned
+
+# Exploratory Data Analysis
+
+## Data Cleaning
+
+We start with exploring our dataset first. Some of the parameters are not numeric, which means that we need to factor them.
+
+```{r}
+mvpstats %>% clean_names() %>% head()
+mvpstats <- mvpstats %>% mutate(Year = factor(Year))
+```
+
+Then, we should consider the parameters that could reflect a player's performance and impact on the court. Some of the parameters are irrelevant to our prediction of points per game(PTS), which we would like to exclude them so as to obtain a better prediction.
+```{r}
+mvpstats <- mvpstats %>% select(-Player, -Rank, -Share, -Tm, -Pts.Won, -Pts.Max, -First, -WS.48)
+
+mvpstats %>% dim()
+mvpstats %>% head()
+```
+The dataset now has 13 relevant variables.
+
+We should also check for any NA or missing values in our dataset.
+```{r}
+cbind(
+   lapply(
+     lapply(mvpstats, is.na)
+     , sum)
+   )
+```
+Clearly, there is no missing  or NA value in our dataset now.
+
+## Graphs and Interpretations
+
+After cleaning and modifying our dataset. We then could make our explorative data analysis.
+
+
+From the histogram, we could observe that each year's number of MVPs are similar. This is because the MPVs of the season are nominated according to the performance of the players during their regular season. 
+
+If we then want to access the distribution of every MVP's performance from 1991 to 2021, we would see that the majority of MVPs have PTS around 35 to 40 points. The shape of the distribution is also a little bit left-skewed. There are a few MVPs who might be excellent leaders or made other contributions to become MVPs. But the overall distribution could convey that MVPs of the season are indeed the best player in the league for the year.
+```{r, fig.width = 6, fig.height = 4}
+ggplot(mvpstats, aes(x = PTS))+
+  geom_histogram(bins = 20, color = "Red")+
+  ggtitle("The Distribution of Each MVP's Points Per Game")+
+  xlab("PTS")+
+  ylab("number of MVPs")
+```
+
+```{r, fig.width = 6, fig.height = 4}
+ggplot(mvpstats, aes(x = Age))+ 
+  geom_histogram(color = "Yellow", bins = 30)
+```
+
+Although some players might won MVP for several times, for the purpose of predicting MP of the MVP players, we could still consider each time they won as one unique observation. From above plot, we see that the distribution of MVP's age is from 23 to 31 years old.This also makes sense because the peak in a player's career mostly concentrated on this period. This is the time when a player gained some experiences from the games and they are also young and energetic.
+
+After some histograms, we would then examine the internal relationships among parameters.
+```{r, fig.width = 6, fig.height = 4}
+mvpstats %>% 
+  select(where(is.numeric)) %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot(type = "lower", diag = FALSE)
+```
+From the corr plot, we found that PTS have strong, positive correlaiton with MP and WS, and PTS have negative correlation with AST and Age. We could also observe many other correlations among parameters. 
+
+In fact, TRB has little positive impact on PTS from the corr plot, which is surprising because more rebounds usually means more chances to get points.
+
+Also, the correlation between PTS and BLK is trivial. This is acceptable because blocks usually correlated with defense performances rather than offense performances.
+
+Then, we choose scatter plots to plot PTS and MP, PTS and WS, and PTS and AST, PTS and Age.
+```{r}
+s1 <- mvpstats %>% ggplot(aes(x = PTS, y = MP))+ geom_point()
+s2 <- mvpstats %>% ggplot(aes(x = PTS, y = WS))+ geom_point()
+s3 <- mvpstats %>% ggplot(aes(x = PTS, y = AST))+ geom_point()
+s4 <- mvpstats %>% ggplot(aes(x = PTS, y = Age))+ geom_point()
+grid.arrange(s1, s2, s3, s4)
+```
+
+We saw some roughly linear correlation between PTS and MP, and PTS and WS.
+We did not observe strong correlation between PST and Age, which also reflected on the correlation matrix.
+
+Beside the correlation between PTS and other predictors, I also observe two other pairs of parameters: BLK and TRB and AST and STL has strong correlations. Then, we could examine their correlation by plotting scatter plots again.
+
+```{r}
+s4 <- mvpstats %>% ggplot(aes(x = TRB, y = BLK))+ geom_point()
+s5 <- mvpstats %>% ggplot(aes(x = AST, y = STL))+ geom_point()
+grid.arrange(s4, s5)
+```
+
+Based on the plots, it is reasonable to say that these two pairs are strongly correlated, which means that I could establish interactions between them.
+
+# Model Construction
+
+## Data Spliting
+
+```{r}
+set.seed(3435)
+
+mvpstats_split <- initial_split(mvpstats, strata = "PTS", prop = 0.7)
+mvpstats_train <- training(mvpstats_split)
+mvpstats_test <- testing(mvpstats_split)
+
+mvpstats_folds <- vfold_cv(mvpstats_train, v = 5, strata = "PTS")
+```
+
+We should examine both training and testing set to make sure the number of observations is enough.
+```{r}
+dim(mvpstats_train)
+dim(mvpstats_test)
+```
+The training set contains 329 observations and the testing set contains 145 observations, which are sufficient here.
+
+## Setting up Model
+
+### Cretate Recipe
+
+After splitting our dataset, we are going to create the recipe for our following predictions.
+```{r}
+mvpstats_recipe <- recipe(PTS ~ Age + G + MP +TRB + AST + STL + BLK + FG. + X3P.+ FT.+ WS + Year, data = mvpstats_train) %>% 
+  step_interact(terms = ~ starts_with("TRB"):BLK + AST:STL) %>% 
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors())
+
+```
+
+## Linear Regression Model
+
+The first model we use is a linear regression model.
+```{r, message=FALSE, warning=FALSE}
+lm_model <- linear_reg() %>% 
+  set_engine("lm")
+
+linear_wk <- workflow() %>% 
+  add_recipe(mvpstats_recipe) %>% 
+  add_model(lm_model)
+
+linear_fit <- fit_resamples(linear_wk, mvpstats_folds)
+
+collect_metrics(linear_fit)
+```
+
+We select the best model across different folds.
+```{r, message=FALSE, warning=FALSE}
+best_linear <- select_best(linear_fit, metric = "rmse")
+linear_final <- finalize_workflow(linear_wk, best_linear)
+linear_final_fit <- fit(linear_final, data = mvpstats_train)
+```
+
+```{r, message=FALSE, warning=FALSE}
+linear_predict <- augment(linear_final_fit, new_data = mvpstats_test) %>% select(PTS, starts_with(".pred"))
+linear_predict %>% ggplot(aes(x = PTS, y = .pred)) + 
+  geom_point(alpha = 1) +
+  geom_abline(lty = 2) +
+  theme_bw()
+```
+
+Finally, we examine the performance of the linear regression model by examing its `rmse` and `rsq`.
+```{r, message=FALSE, warning=FALSE}
+linear_accuracy_rmse <- augment(linear_final_fit, new_data = mvpstats_test) %>%
+  rmse(truth = PTS, estimate = .pred)
+linear_accuracy_rsq <- augment(linear_final_fit, new_data = mvpstats_test) %>%
+  rsq(truth = PTS, estimate = .pred)
+
+linear_performance <- rbind(linear_accuracy_rmse, linear_accuracy_rsq)
+linear_performance
+```
+
+## Elastic Net Regressioin Model
+Then, the secon model we choose is an Elastic Net Regression Model, specifically a ridge regressoin model.
+
+For this model, we choose L1 regularization and L2 penalty, which is a Ridge Regression Model.
+The range of regularization is from 0 to 1, and penalty range is from -5 to 5.
+
+```{r, message=FALSE, warning=FALSE}
+ridge_spec <- linear_reg(mixture = tune(), penalty = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+#set up workflow for the model
+ridge_wk <- workflow() %>% 
+  add_recipe(mvpstats_recipe) %>% 
+  add_model(ridge_spec)
+
+#set up grid for tuning
+ridge_grid <- grid_regular(penalty(range = c(-5, 5)), mixture(range = c(0, 1)), levels = 10)
+
+#tune the model
+ridge_res <- tune_grid(
+  ridge_wk,
+  resamples = mvpstats_folds,
+  grid = ridge_grid
+  )
+
+ridge_res %>% autoplot()
+```
+
+Next, we set metric to `rmse` and select the best model.
+```{r, message=FALSE, warning=FALSE}
+ridge_res %>% collect_metrics() %>% head()
+best_penalty <- select_best(ridge_res, metric = "rmse")
+ridge_final <- finalize_workflow(ridge_wk ,best_penalty)
+ridge_final_fit <- fit(ridge_final, data = mvpstats_train)
+```
+
+```{r, message=FALSE, warning=FALSE}
+ridge_predict <- augment(ridge_final_fit, new_data = mvpstats_test) %>% select(PTS, starts_with(".pred"))
+ridge_predict %>% ggplot(aes(x = PTS, y = .pred)) + 
+  geom_point(alpha = 1) +
+  geom_abline(lty = 2) +
+  theme_bw()
+```
+
+We could also exmaine the accuracy level of this model.
+```{r, message=FALSE, warning=FALSE}
+ridge_accuracy_rmse <- augment(ridge_final_fit, new_data = mvpstats_test) %>%
+  rmse(truth = PTS, estimate = .pred)
+ridge_accuracy_rsq <- augment(ridge_final_fit, new_data = mvpstats_test) %>%
+  rsq(truth = PTS, estimate = .pred)
+
+elastic_net_performance <- rbind(ridge_accuracy_rmse, ridge_accuracy_rsq)
+elastic_net_performance
+```
+Clearly, the rsq of our ridge regression model has a `rsq` around 0.47, which does not yield a convincing prediction.
+
+### Tree-based Methods
+
+### Boosted Tree Model
+The third model I choose is the boosted tree model.
+
+```{r}
+boost_spec <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+boost_wf <- workflow() %>%
+  add_model(boost_spec %>%
+  set_args(trees = tune())) %>%
+  add_recipe(mvpstats_recipe)
+
+boost_grid <- grid_regular(trees(range = c(10, 2000)), levels = 25)
+
+boost_tune_res <- tune_grid(
+  boost_wf,
+  resamples = mvpstats_folds,
+  grid = boost_grid,
+)
+
+boost_tune_res %>% autoplot()
+```
+
+As always, we then select the best model.
+```{r}
+best_boost <- select_best(boost_tune_res, metric = "rmse")
+boost_final <- finalize_workflow(boost_wf, best_boost)
+boost_final_fit <- fit(boost_final, data = mvpstats_train)
+```
+
+```{r}
+boost_predict <- augment(boost_final_fit, new_data = mvpstats_test) %>% select(PTS, starts_with(".pred"))
+boost_predict %>% ggplot(aes(x = PTS, y = .pred)) + 
+  geom_point(alpha = 1) +
+  geom_abline(lty = 2) +
+  theme_bw()
+```
+
+```{r}
+boost_accuracy_rmse <- augment(boost_final_fit, new_data = mvpstats_test) %>%
+  rmse(truth = PTS, estimate = .pred)
+boost_accuracy_rsq <- augment(boost_final_fit, new_data = mvpstats_test) %>%
+  rsq(truth = PTS, estimate = .pred)
+
+boost_performance <- rbind(boost_accuracy_rmse, boost_accuracy_rsq)
+boost_performance
+```
+For the boosted tree model, we observe a higher `rsq` of 0.63, which adds more credibility to this model.
+
+## Random Forest Model
+
+The fourth model I select is random forest.
+```{r}
+bagging_spec <- rand_forest(mtry = .cols()) %>% 
+  set_engine("ranger", importance = 'impurity') %>% 
+  set_mode("regression") %>%
+  set_args(min_n = tune(), mtry = tune(), trees = tune())
+
+rand_tree_wk <- workflow() %>%
+  add_recipe(mvpstats_recipe) %>%
+  add_model(bagging_spec)
+
+forest_grid <- grid_regular(mtry(range = c(1, 17)), 
+                           trees(range = c(20, 500)), 
+                           min_n(range = c(2, 30)),
+                           levels = 5)
+
+tune_res_rf <- tune_grid(
+  object = rand_tree_wk, 
+  resamples = mvpstats_folds, 
+  grid = forest_grid, 
+  metrics = metric_set(rmse)
+)
+
+best_rf <- select_best(tune_res_rf, metric = "rmse")
+rf_final <- finalize_workflow(rand_tree_wk, best_rf)
+rf_final_fit <- fit(rf_final, data = mvpstats_train)
+```
+
+```{r}
+autoplot(tune_res_rf)
+```
+
+```{r}
+rf_predict <- augment(rf_final_fit, new_data = mvpstats_test) %>% select(PTS, starts_with(".pred"))
+rf_predict %>% ggplot(aes(x = PTS, y = .pred)) + 
+  geom_point(alpha = 1) +
+  geom_abline(lty = 2) +
+  coord_obs_pred() +
+  theme_bw()
+```
+
+```{r}
+rf_accuracy_rmse <- augment(rf_final_fit, new_data = mvpstats_test) %>%
+  rmse(truth = PTS, estimate = .pred)
+rf_accuracy_rsq <- augment(rf_final_fit, new_data = mvpstats_test) %>%
+  rsq(truth = PTS, estimate = .pred)
+
+rf_performance <- rbind(rf_accuracy_rmse, rf_accuracy_rsq)
+rf_performance
+```
+The result shows that random forest has an estimation of rsq around 0.6, which is in the middle among four models.
+
+We could also use `vip()` to find out that MP has the highest variable importance.
+```{r}
+rf_final_fit %>% extract_fit_engine() %>% vip()
+```
+
+
+# Conclusion
+
+## Performance Comparison
+
+After computing four different models for our dataset `mvpstats`, we could combine the results together to see which model performs the best.
+
+We first compare the rmse index.
+```{r}
+rmse_comparisons <- bind_rows(linear_accuracy_rmse, ridge_accuracy_rmse , boost_accuracy_rmse, rf_accuracy_rmse, .id = "Models") %>% 
+  tibble() %>% mutate(model = c("Linear", "Ridge", "Boosted Tree", "Random Forest")) %>% 
+  select(model, .estimate) %>%
+  arrange(.estimate)
+
+rmse_comparisons
+```
+After filtering them with ascending order, we find out that the boosted tree model has the lowest rmse.
+
+In addition, we could also extract the `rsq`.
+```{r}
+rsq_comparisons <- bind_rows(linear_accuracy_rsq, ridge_accuracy_rsq , boost_accuracy_rsq, rf_accuracy_rsq, .id = "Models") %>% 
+  tibble() %>% mutate(model = c("Linear", "Ridge", "Boosted Tree", "Random Forest")) %>% 
+  select(model, .estimate) %>%
+  arrange(desc(.estimate))
+
+rsq_comparisons
+```
+By sorting them in descending order, it is also clear to see that the boosted tree model also has the highest rsq.
+
+In conclusion, based on our predictiom and selection of models, it is reasonable to see that the boosted tree model works the best with our dataset.
+
+The report has three components: data gathering, exploratory data analysis, and model fitting. Indeed, I get the dataset from `Kaggle` and conduct some data cleaning procedures so as to make this dataset workable. In particular, I examine the relationships among variables to see if there are some pairs of variables that may have interactions. Fortunately, I was able to find two pairs: `TRB` and `BLC`, `AST` and `STL`.Also, I modify the dataset by selecting the relevant variables. For example, `First` does not contribute to PTS prediction because there are many comfounding variables in voting processes.
+
+After the data analysis, I started to build up the models. I selected linear regression, elastic net, boosted tree, and random forest. These four models could give me a better interpretation because they cover from linear to tuning. Clearly, after comparisions among models, the result shows that boosted tree has the best performance. Also, I could interpret from the result that there are many factors that could determine the impact of a player on the court. We could not simply look at one parameter, for example PTS, to conclude that "xxx is the best player in the league because he has the highest PTS".
